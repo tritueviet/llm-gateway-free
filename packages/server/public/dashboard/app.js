@@ -33,7 +33,7 @@ function initTheme() {
 
 const PAGE_META = {
   overview: ["Tổng quan", "Trạng thái gateway theo thời gian thực"],
-  playground: ["Thử prompt", "Gửi thử một prompt tới đích danh một client"],
+  playground: ["Prompt", "Gửi prompt tới đích danh một client, bỏ qua routing"],
   clients: ["Clients", "Toàn bộ client agent, online và offline"],
   capabilities: ["Web & CLI", "Công cụ mà các client có thể chạy được"],
   usage: ["Token sử dụng", "Số token đã tiêu thụ theo từng client"],
@@ -88,7 +88,20 @@ function statusBadge(status) {
 }
 
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  const options = { ...opts };
+  // Teko IAM bearer token, when the gateway has admin auth enabled. Attached
+  // here because every /api/* call funnels through this helper.
+  const token = window.AigwAuth?.getAccessToken?.();
+  if (token) options.headers = { ...(options.headers ?? {}), Authorization: `Bearer ${token}` };
+
+  const res = await fetch(path, options);
+  if (res.status === 401 || res.status === 403) {
+    // The token is missing, expired, or belongs to someone without access.
+    // Re-running login is the only useful recovery, and it must not be done
+    // from a render loop, so it is delegated to the auth module.
+    window.AigwAuth?.onUnauthorised?.(res.status);
+    throw new Error(res.status === 401 ? "signed out — redirecting to login" : "your account is not authorised for this dashboard");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body?.error?.message || body?.message || `${path} → HTTP ${res.status}`);
@@ -105,16 +118,119 @@ function toast(msg, isErr) {
   toast._t = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
+/* ------------------------------------------------------- provider glyphs */
+
+/**
+ * Simplified single-path marks, drawn to sit on a 24x24 grid and inherit
+ * currentColor. Deliberately not the official brand logos: those are
+ * trademarked and must not be redrawn or recoloured, so these are neutral
+ * geometric stand-ins keyed by provider id.
+ */
+const PROVIDER_ICON = {
+  chatgpt: '<path d="M12 3.2 19.6 7.6v8.8L12 20.8 4.4 16.4V7.6z"/><circle cx="12" cy="12" r="3"/>',
+  claude: '<path d="M7.5 18 12 5.6 16.5 18"/><path d="M9.4 13.6h5.2"/>',
+  gemini: '<path d="M12 3.2 L13.6 10.4 L20.8 12 L13.6 13.6 L12 20.8 L10.4 13.6 L3.2 12 L10.4 10.4 Z"/>',
+  deepseek: '<path d="M3.6 9.2 C7.4 5.4 13.6 5.6 17.2 9.4 C18.8 11 19.8 13 20.4 15.2"/><circle cx="8.6" cy="14.6" r="2.6"/>',
+  grok: '<path d="M5 19 19 5"/><path d="M9.5 19H5v-4.5"/><path d="M19 9.5V5h-4.5"/>',
+  perplexity: '<path d="M12 4v16"/><path d="M12 8.5 5.5 4v9.5a6.5 6.5 0 0 0 13 0V4L12 8.5z"/>',
+  duck: '<circle cx="12" cy="12" r="8.4"/><circle cx="9.8" cy="10.4" r="1"/><path d="M8.8 15.4 C10.9 14.1 13.1 14.1 15.2 15.4"/>',
+  mockweb: '<rect x="3.4" y="5.4" width="17.2" height="13.2" rx="2"/><path d="M3.4 9.6h17.2"/>',
+};
+
+/** Keyed separately: "claude" is both a web provider and a CLI. */
+const CLI_ICON = {
+  // the Claude "A" mark inside a terminal frame — related to web/claude, not identical
+  claude: '<rect x="2.6" y="4.4" width="18.8" height="15.2" rx="2"/><path d="M8.8 16 12 8.2 15.2 16"/><path d="M10.2 13.4h3.6"/>',
+  opencode: '<path d="M12 3.4 20 8v8l-8 4.6L4 16V8z"/><path d="m9.4 10.4-2 1.6 2 1.6"/><path d="m14.6 10.4 2 1.6-2 1.6"/>',
+  echo: '<path d="M4 12h3l2.6-5 3.4 10 2.4-5H20"/>',
+};
+
+/** Fallback marks when a capability id matches no known provider. */
+const KIND_ICON = {
+  web: '<circle cx="12" cy="12" r="8.6"/><path d="M3.4 12h17.2"/><path d="M12 3.4a14 14 0 0 1 0 17.2a14 14 0 0 1 0-17.2"/>',
+  cli: '<rect x="2.6" y="4.4" width="18.8" height="15.2" rx="2"/><path d="m7 10 2.6 2.6L7 15.2"/><path d="M12.8 15.4h4"/>',
+};
+
+/** "web/chatgpt" | "cli/claude" -> "chatgpt" | "claude" */
+function providerKey(cap) {
+  const raw = String(cap.capabilityId || cap.id || "");
+  const slug = raw.includes("/") ? raw.slice(raw.indexOf("/") + 1) : raw;
+  return slug.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Official brand marks. Two CDNs, because neither covers the whole set:
+ *
+ *   lobehub  — has OpenAI, Grok and OpenCode, which simple-icons dropped on
+ *              trademark request. "-color" variants exist for most; OpenAI and
+ *              Grok are monochrome by brand design and inherit currentColor.
+ *   simpleicons — used only for DuckDuckGo, which lobehub does not carry.
+ *
+ * Artwork is served unmodified; only the documented colour variant is chosen.
+ */
+const LOBE = "https://unpkg.com/@lobehub/icons-static-svg@latest/icons";
+const SIMPLE = "https://cdn.simpleicons.org";
+
+const BRAND_CDN = {
+  chatgpt: `${LOBE}/openai.svg`,
+  claude: `${LOBE}/claude-color.svg`,
+  gemini: `${LOBE}/gemini-color.svg`,
+  deepseek: `${LOBE}/deepseek-color.svg`,
+  grok: `${LOBE}/grok.svg`,
+  perplexity: `${LOBE}/perplexity-color.svg`,
+  duck: `${SIMPLE}/duckduckgo/DE5833`,
+};
+
+const BRAND_CLI_CDN = {
+  // Claude Code has its own mark, distinct from the Claude web logo.
+  claude: `${SIMPLE}/claudecode/D97757`,
+  opencode: `${LOBE}/opencode.svg`,
+};
+
+/**
+ * Monochrome marks inherit the surrounding text colour, so they stay legible
+ * in both themes. Colour marks must not be tinted — they ship brand-correct.
+ */
+const MONO_BRAND = new Set([`${LOBE}/openai.svg`, `${LOBE}/grok.svg`, `${LOBE}/opencode.svg`]);
+
+function providerIcon(cap, kind) {
+  // "claude" exists as both web/claude and cli/claude, so the two maps stay
+  // separate: a CLI never falls through to a web glyph.
+  const key = providerKey(cap);
+  const url = kind === "cli" ? BRAND_CLI_CDN[key] : BRAND_CDN[key];
+  const path = (kind === "cli" ? CLI_ICON[key] : PROVIDER_ICON[key]) || KIND_ICON[kind];
+  const drawn = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+
+  if (!url) return drawn;
+
+  // The drawn mark sits underneath as the fallback: if the CDN is blocked or
+  // offline the <img> errors and removes itself, so the cell is never empty.
+  // A monochrome mark is painted through a mask so it picks up currentColor —
+  // an <img> cannot be recoloured, and black-on-dark would vanish.
+  const layer = MONO_BRAND.has(url)
+    ? `<i class="mono-mark" style="-webkit-mask-image:url('${url}');mask-image:url('${url}')"></i>`
+    : `<img src="${url}" alt="" loading="lazy" decoding="async" onerror="this.remove()" />`;
+
+  return `<span class="brand-mark">${drawn}${layer}</span>`;
+}
+
 function capChip(cap) {
   const kind = cap.kind === "browser" ? "web" : "cli";
   const name = cap.displayName || cap.capabilityId || cap.id;
   const avail = cap.available !== false;
-  return `<span class="cap-chip ${kind}${avail ? "" : " unavailable"}" title="${esc(cap.reason || "")}"><span class="kind-dot"></span>${esc(name)}</span>`;
+  return `<span class="cap-chip ${kind}${avail ? "" : " unavailable"}" title="${esc(cap.reason || "")}">${providerIcon(cap, kind)}${esc(name)}</span>`;
 }
 
+/**
+ * Only what the client can actually serve right now. The unavailable ones are
+ * noise in a client row — a probe reports every known backend whether or not
+ * it is usable, so an idle agent would otherwise show ten dead chips. The full
+ * catalogue, including what is offline and why, lives in the Web & CLI view.
+ */
 function capChips(caps) {
-  if (!caps || !caps.length) return '<span class="muted">—</span>';
-  return `<div class="chip-wrap">${caps.map(capChip).join("")}</div>`;
+  const list = (caps || []).filter((c) => c.available !== false);
+  if (!list.length) return '<span class="muted">Chưa có capability khả dụng</span>';
+  return `<div class="chip-wrap">${list.map(capChip).join("")}</div>`;
 }
 
 /* --------------------------------------------------------------- fetching */
@@ -211,6 +327,56 @@ function renderRoutingOverviewCard() {
   });
 }
 
+/* -------------------------------------------------------------- dropdowns */
+
+/**
+ * Tom Select instances keyed by element id. The library is loaded from a CDN,
+ * so every use is guarded: if it failed to load (offline, blocked egress, CSP)
+ * `window.TomSelect` is undefined and the plain <select> keeps working. That
+ * fallback is deliberate — this dashboard is expected to run on hosts with no
+ * outbound internet.
+ */
+const selects = {};
+
+const TOM_OPTS = {
+  create: false,
+  allowEmptyOption: true,
+  controlInput: null, // no search box; these lists are short
+  plugins: [],
+  render: {
+    no_results: () => '<div class="no-results">Không có kết quả</div>',
+  },
+};
+
+function initSelect(id, opts = {}) {
+  if (!window.TomSelect) return null;
+  const el = document.getElementById(id);
+  if (!el || selects[id]) return selects[id] || null;
+  selects[id] = new TomSelect(el, { ...TOM_OPTS, ...opts });
+  return selects[id];
+}
+
+/**
+ * The populate* functions rewrite <select>.innerHTML wholesale. Tom Select
+ * caches its own option list, so it has to be rebuilt from the DOM afterwards
+ * or the visible list goes stale.
+ */
+function syncSelect(id) {
+  const ts = selects[id];
+  if (!ts) return;
+  const el = document.getElementById(id);
+  ts.clearOptions();
+  ts.clear(true);
+  for (const opt of el.querySelectorAll("option")) {
+    if (!opt.value && !opt.textContent.trim()) continue;
+    ts.addOption({ value: opt.value, text: opt.textContent });
+  }
+  ts.refreshOptions(false);
+  if (el.value) ts.setValue(el.value, true);
+  if (el.disabled) ts.disable();
+  else ts.enable();
+}
+
 /* ------------------------------------------------------------- playground */
 
 function renderPlayground() {
@@ -222,6 +388,7 @@ function renderPlayground() {
     : `<option value="">Không có client online</option>`;
   clientSel.disabled = live.length === 0;
   if (live.some((c) => c.clientId === prevClient)) clientSel.value = prevClient;
+  syncSelect("pg-client");
   populatePlaygroundCapabilities();
 }
 
@@ -235,10 +402,11 @@ function populatePlaygroundCapabilities() {
   const prevCap = capSel.value;
   const caps = (playgroundClient()?.capabilities || []).filter((c) => c.available);
   capSel.innerHTML = caps.length
-    ? caps.map((c) => `<option value="${esc(c.id)}">${c.kind === "browser" ? "🌐" : "⌨️"} ${esc(c.displayName)}</option>`).join("")
+    ? caps.map((c) => `<option value="${esc(c.id)}">${c.kind === "browser" ? "Web" : "CLI"} · ${esc(c.displayName)}</option>`).join("")
     : `<option value="">Client chưa có capability khả dụng</option>`;
   capSel.disabled = caps.length === 0;
   if (caps.some((c) => c.id === prevCap)) capSel.value = prevCap;
+  syncSelect("pg-capability");
   populatePlaygroundSubmodels();
 }
 
@@ -251,11 +419,13 @@ function populatePlaygroundSubmodels() {
   if (!models.length) {
     subField.style.display = "none";
     subSel.innerHTML = "";
+    syncSelect("pg-submodel");
     return;
   }
   const prev = subSel.value;
   subSel.innerHTML = models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
   if (models.includes(prev)) subSel.value = prev;
+  syncSelect("pg-submodel");
   subField.style.display = "";
 }
 
@@ -388,22 +558,76 @@ function renderClients() {
     rows.join("") || '<tr class="empty-row"><td colspan="9">Chưa có client nào từng kết nối</td></tr>';
 }
 
+/**
+ * The full catalogue of backends the gateway knows about, merged from two
+ * sources:
+ *   /api/capabilities — only what is live, and carries clients/slots counts
+ *   /api/clients      — every backend each agent probed, including the ones
+ *                       reporting unavailable plus the reason why
+ * The union is what the system *can* support; the flags say what it can serve
+ * right now. Without the merge an offline provider vanishes from the list
+ * entirely, which reads as "not supported" rather than "nobody is serving it".
+ */
+function catalogue(kind) {
+  const byId = new Map();
+
+  for (const c of lastData.capabilities?.capabilities || []) {
+    if (c.kind !== kind) continue;
+    byId.set(c.id, { ...c, available: true });
+  }
+
+  for (const client of lastData.clients?.live || []) {
+    for (const cap of client.capabilities || []) {
+      if (cap.kind !== kind) continue;
+      const seen = byId.get(cap.id);
+      if (!seen) {
+        byId.set(cap.id, {
+          id: cap.id,
+          kind: cap.kind,
+          displayName: cap.displayName || cap.id,
+          models: cap.models || [],
+          clients: 0,
+          slots: 0,
+          available: cap.available !== false,
+          reason: cap.reason || "",
+        });
+      } else if (!seen.models?.length && cap.models?.length) {
+        seen.models = cap.models;
+      }
+    }
+  }
+
+  // available first, then alphabetical — a usable backend is the thing you look for
+  return [...byId.values()].sort(
+    (a, b) => Number(b.available) - Number(a.available) || a.id.localeCompare(b.id),
+  );
+}
+
 function renderCapTable(elId, list) {
-  const rows = list.map(
-    (c) => `<tr>
-      <td><strong>${esc(c.displayName)}</strong><div class="mono">${esc(c.id)}</div></td>
+  const chipKind = elId.endsWith("web") ? "web" : "cli";
+  const rows = list.map((c) => {
+    const chips = (c.models || [])
+      .map((m) => `<span class="cap-chip ${c.available ? chipKind : "off"}">${esc(m)}</span>`)
+      .join("");
+    const models = chips ? `<div class="chip-wrap">${chips}</div>` : "";
+    const status = c.available
+      ? '<span class="pill ok">Sẵn sàng</span>'
+      : `<span class="pill off" title="${esc(c.reason || "")}">Không khả dụng</span>`;
+    return `<tr${c.available ? "" : ' class="row-off"'}>
+      <td><div class="cap-name">${providerIcon(c, c.kind === "browser" ? "web" : "cli")}<div><strong>${esc(c.displayName)}</strong><div class="mono">${esc(c.id)}</div></div></div></td>
+      <td>${status}</td>
       <td class="num">${fmtNum(c.clients)}</td>
       <td class="num">${fmtNum(c.slots)}</td>
-      <td>${(c.models || []).map((m) => `<span class="cap-chip web" style="margin-top:2px;">${esc(m)}</span>`).join("") || '<span class="muted">—</span>'}</td>
-    </tr>`,
-  );
-  document.getElementById(elId).innerHTML = rows.join("") || `<tr class="empty-row"><td colspan="4">Chưa có capability nào</td></tr>`;
+      <td>${models || '<span class="muted">—</span>'}</td>
+    </tr>`;
+  });
+  document.getElementById(elId).innerHTML =
+    rows.join("") || `<tr class="empty-row"><td colspan="5">Chưa có capability nào</td></tr>`;
 }
 
 function renderCapabilities() {
-  const caps = lastData.capabilities?.capabilities || [];
-  renderCapTable("tbl-cap-web", caps.filter((c) => c.kind === "browser"));
-  renderCapTable("tbl-cap-cli", caps.filter((c) => c.kind === "cli"));
+  renderCapTable("tbl-cap-web", catalogue("browser"));
+  renderCapTable("tbl-cap-cli", catalogue("cli"));
 }
 
 function renderUsage() {
@@ -471,7 +695,8 @@ function renderStrategyGrid() {
   const grid = document.getElementById("strategy-grid");
   if (grid.dataset.built) return;
   grid.dataset.built = "1";
-  const order = ["round-robin", "ip-hash", "least-busy", "fill-first"];
+  // default first, so the recommended strategy is what the eye lands on
+  const order = ["ip-hash", "least-busy", "round-robin", "fill-first"];
   grid.innerHTML = order
     .map(
       (key) => `<label class="strategy-option" data-key="${key}">
@@ -513,6 +738,12 @@ function renderCache() {
 
 function initActions() {
   document.getElementById("refresh-btn").addEventListener("click", loadAll);
+
+  // Enhance the three playground selects. Tom Select forwards a native
+  // `change` on the original element, so the listeners below are unaffected.
+  initSelect("pg-client");
+  initSelect("pg-capability");
+  initSelect("pg-submodel");
 
   document.getElementById("pg-client").addEventListener("change", populatePlaygroundCapabilities);
   document.getElementById("pg-capability").addEventListener("change", populatePlaygroundSubmodels);

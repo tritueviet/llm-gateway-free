@@ -129,6 +129,47 @@ the socket (code `4002`) rather than letting an incompatible client half-work.
 Bump it deliberately when changing message shapes, and update
 `docs/PROTOCOL.md` alongside.
 
+## Dashboard UI (`packages/server/public/dashboard`)
+
+Three static files served by `express.static` — no build step, no framework.
+`index.html` holds every view as a `<section class="view">`; `app.js` toggles
+which one is active; `styles.css` is a token-based design system.
+
+**The dashboard supports light AND dark mode — always change both.**
+This is the rule that gets broken most often, because a change looks finished
+after checking only the theme you happen to be in.
+
+- All colours come from CSS custom properties defined twice: the dark values on
+  bare `:root`, the light overrides under `:root[data-theme="light"]`. Style with
+  `var(--surface)` / `var(--text)` / `var(--border)`, never a raw hex.
+- A hardcoded hex outside the `:root[data-theme="light"]` block is a bug — it
+  will be wrong in one of the two themes. The topbar previously hardcoded
+  `#FFFFFF`, which made the header ignore dark mode entirely.
+- Adding a colour means adding it to **both** token blocks. Light-mode hues are
+  darkened, not reused: the same accent that reads well on `#0B1120` fails
+  contrast on white.
+- Verify in both themes before calling a UI change done — toggle with the
+  header button (it persists to `localStorage` under `aigw-theme`) and keep
+  body text at >= 4.5:1 against its own surface in each.
+
+**Each sidebar page is its own URL** (`/dashboard/clients`, driven by
+`history.pushState` in `app.js`). Two constraints follow:
+
+- `DASHBOARD_PAGES` in `packages/server/src/http/app.ts` must list every key in
+  `PAGE_META` in `app.js`. It is the SPA fallback that serves `index.html` for
+  those paths; a view missing there 404s on hard reload or a pasted link.
+- Sidebar entries are real `<a href>` elements so they stay middle-clickable, so
+  their click handler **must** call `preventDefault()`. Without it the browser
+  follows the href and reloads the whole document — every asset re-fetched, with
+  a visible flicker.
+
+**Dropdowns are Tom Select instances**, loaded from a CDN and guarded: if the
+script fails to load the plain `<select>` still works. Tom Select keeps the
+user's choice in its own state and shadows the underlying element, so read
+values through `selectValue(id)` — reading `.value` directly returns whatever
+was last written programmatically and silently loses the operator's pick on the
+next 5s refresh.
+
 ## Tests
 
 - **Unit** (`tests/unit`) — routing strategies/slot accounting, cache

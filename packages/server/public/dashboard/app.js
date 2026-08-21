@@ -95,17 +95,25 @@ function navigate(view) {
 }
 
 function initNav() {
+  /** A plain left-click, i.e. not one the browser should handle itself. */
+  const isPlainClick = (e) =>
+    !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+
+  // Sidebar entries are real <a href> elements so they stay middle-clickable
+  // and copyable, which means the default navigation has to be cancelled here —
+  // without preventDefault the browser follows the href and reloads the whole
+  // document (all CSS/JS/fonts re-fetched, visible flicker).
   document.getElementById("nav").addEventListener("click", (e) => {
     const item = e.target.closest(".nav-item");
-    if (!item) return;
+    if (!item || !isPlainClick(e)) return;
+    e.preventDefault();
     navigate(item.dataset.view);
   });
 
-  // Intercept same-origin links to a dashboard page (e.g. the overview routing
-  // card) so they navigate in place instead of triggering a full page load.
-  // Modified clicks are left alone: open-in-new-tab must keep working.
+  // Same treatment for in-page links to a dashboard page (e.g. the overview
+  // routing card). Modified clicks are left alone: open-in-new-tab must work.
   document.addEventListener("click", (e) => {
-    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (!isPlainClick(e)) return;
     const link = e.target.closest("a[href]");
     if (!link || link.target === "_blank" || link.origin !== window.location.origin) return;
     if (link.closest("#nav")) return;

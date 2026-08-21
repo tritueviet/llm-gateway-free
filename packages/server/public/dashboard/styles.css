@@ -59,8 +59,10 @@
   --border-strong: #C3CDDD;
 
   --text: #0F1B33;
-  --text-dim: #4A5872;
-  --text-mute: #74839B;
+  /* 4.5:1 on --surface (#FFFFFF); used for secondary body text, so it has to
+     clear AA rather than merely look lighter than --text. */
+  --text-dim: #465468;
+  --text-mute: #667490;
 
   /* darkened so contrast holds on white — not the same hues as dark mode */
   --accent: #0D9668;
@@ -307,9 +309,9 @@ body {
   flex-direction: column;
 }
 
-/* Solid white bar in both themes. Because it no longer sits on --bg, its text
-   and controls cannot use the theme's foreground tokens — they would be white
-   on white in dark mode — so the bar carries its own fixed ink palette. */
+/* The bar follows the active theme. Its ink tokens are derived from the theme's
+   own foreground/surface tokens rather than hardcoded, so light and dark both
+   stay legible and a token change propagates here automatically. */
 .topbar {
   position: sticky;
   top: 0;
@@ -320,13 +322,13 @@ body {
   justify-content: space-between;
   gap: 16px;
   padding: 14px 28px;
-  background: #FFFFFF;
-  border-bottom: 1px solid #E2E8F0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
 
-  --bar-ink: #0F1B33;
-  --bar-ink-dim: #5A6880;
-  --bar-line: #DDE3ED;
-  --bar-hover: #F1F5F9;
+  --bar-ink: var(--text);
+  --bar-ink-dim: var(--text-dim);
+  --bar-line: var(--border);
+  --bar-hover: var(--surface-3);
 }
 
 .topbar h1 {
@@ -370,22 +372,22 @@ body {
 
 .icon-btn:active { background: var(--surface-2); }
 
-/* buttons inside the white bar follow its ink palette, not the theme's */
+/* buttons inside the bar follow its derived ink palette */
 .topbar .icon-btn {
-  background: #FFFFFF;
+  background: var(--surface);
   border-color: var(--bar-line);
   color: var(--bar-ink-dim);
 }
 
 .topbar .icon-btn:hover {
   background: var(--bar-hover);
-  border-color: #C3CDDD;
+  border-color: var(--border-strong);
   color: var(--bar-ink);
 }
 
-.topbar .icon-btn:active { background: #E7EDF6; }
+.topbar .icon-btn:active { background: var(--surface-2); }
 
-.topbar .icon-btn:focus-visible { outline-color: #2563EB; }
+.topbar .icon-btn:focus-visible { outline-color: var(--info); }
 
 .content { padding: 24px 28px 56px; }
 

@@ -42,17 +42,90 @@ const PAGE_META = {
   cache: ["Cache", "Trạng thái response cache"],
 };
 
+const DEFAULT_VIEW = "overview";
+
+const BASE_PATH = "/dashboard";
+
+/**
+ * Each sidebar entry is a real URL (`/dashboard/clients`), so a page can be
+ * linked, bookmarked, and reloaded in place.
+ *
+ * This relies on the SPA fallback in `packages/server/src/http/app.ts`, which
+ * serves index.html for every known page path — express.static alone would 404
+ * on reload. A view added to PAGE_META must also be added to DASHBOARD_PAGES
+ * there, or its URL breaks on refresh.
+ */
+function showView(view) {
+  const known = Object.prototype.hasOwnProperty.call(PAGE_META, view) ? view : DEFAULT_VIEW;
+
+  document
+    .querySelectorAll(".nav-item")
+    .forEach((n) => n.classList.toggle("active", n.dataset.view === known));
+  document
+    .querySelectorAll(".view")
+    .forEach((v) => v.classList.toggle("active", v.id === `view-${known}`));
+
+  const [title, sub] = PAGE_META[known];
+  document.getElementById("page-title").textContent = title;
+  document.getElementById("page-sub").textContent = sub;
+  document.title = `${title} · AI Gateway`;
+  return known;
+}
+
+/** `/dashboard/clients` -> `clients`; anything unrecognised falls back. */
+function viewFromPath() {
+  const raw = decodeURIComponent(window.location.pathname).replace(/\/+$/, "").split("/").pop();
+  return Object.prototype.hasOwnProperty.call(PAGE_META, raw) ? raw : DEFAULT_VIEW;
+}
+
+/**
+ * Canonical URL for a view. The default view lives at `/dashboard/` — with the
+ * trailing slash, because express.static 301s `/dashboard` there, and matching
+ * it keeps the pathname comparisons in navigate()/initNav() honest.
+ */
+function pathForView(view) {
+  return view === DEFAULT_VIEW ? `${BASE_PATH}/` : `${BASE_PATH}/${view}`;
+}
+
+/** Render a view and give it its own history entry. */
+function navigate(view) {
+  const known = showView(view);
+  const url = pathForView(known);
+  if (url !== window.location.pathname) history.pushState({ view: known }, "", url);
+}
+
 function initNav() {
   document.getElementById("nav").addEventListener("click", (e) => {
     const item = e.target.closest(".nav-item");
     if (!item) return;
-    const view = item.dataset.view;
-    document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n === item));
-    document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
-    const [title, sub] = PAGE_META[view] || ["", ""];
-    document.getElementById("page-title").textContent = title;
-    document.getElementById("page-sub").textContent = sub;
+    navigate(item.dataset.view);
   });
+
+  // Intercept same-origin links to a dashboard page (e.g. the overview routing
+  // card) so they navigate in place instead of triggering a full page load.
+  // Modified clicks are left alone: open-in-new-tab must keep working.
+  document.addEventListener("click", (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const link = e.target.closest("a[href]");
+    if (!link || link.target === "_blank" || link.origin !== window.location.origin) return;
+    if (link.closest("#nav")) return;
+    const view = decodeURIComponent(link.pathname).replace(/\/+$/, "").split("/").pop();
+    if (!Object.prototype.hasOwnProperty.call(PAGE_META, view)) return;
+    e.preventDefault();
+    navigate(view);
+  });
+
+  // Back/forward: render only — pushing here would trap the back button.
+  window.addEventListener("popstate", () => showView(viewFromPath()));
+
+  // Normalise the bar on first load (a trailing slash or an unknown page
+  // becomes the canonical path) via replaceState, so no bogus back entry.
+  const view = viewFromPath();
+  const canonical = pathForView(view);
+  if (window.location.pathname !== canonical) {
+    history.replaceState({ view }, "", canonical);
+  }
+  showView(view);
 }
 
 /* ------------------------------------------------------------------ utils */
@@ -319,12 +392,10 @@ function renderRoutingOverviewCard() {
       <span class="badge neutral">${esc(STRATEGY_LABEL[r.strategy] || r.strategy)}</span>
     </div>
     <p class="muted" style="margin:0 0 12px;">${esc(STRATEGY_DESC[r.strategy]?.text || "")}</p>
-    <a href="#" data-view-link="routing" class="btn" style="text-decoration:none;">Đổi chiến lược →</a>
+    <a href="/dashboard/routing" class="btn" style="text-decoration:none;">Đổi chiến lược →</a>
   `;
-  document.querySelector('#overview-routing [data-view-link]')?.addEventListener("click", (e) => {
-    e.preventDefault();
-    document.querySelector('.nav-item[data-view="routing"]').click();
-  });
+  // A plain href now does the navigation: the hashchange listener renders it,
+  // so no click handler is needed and the link is middle-clickable.
 }
 
 /* -------------------------------------------------------------- dropdowns */
@@ -357,6 +428,23 @@ function initSelect(id, opts = {}) {
 }
 
 /**
+ * Current value of a dropdown.
+ *
+ * Tom Select takes over the <select> and holds the user's choice in its own
+ * state, so reading `.value` off the element returns whatever was last written
+ * programmatically — not what the operator actually picked. Always go through
+ * here, or a manual selection is silently lost on the next 5s refresh.
+ */
+function selectValue(id) {
+  const ts = selects[id];
+  if (ts) {
+    const v = ts.getValue();
+    return Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+  }
+  return document.getElementById(id)?.value ?? "";
+}
+
+/**
  * The populate* functions rewrite <select>.innerHTML wholesale. Tom Select
  * caches its own option list, so it has to be rebuilt from the DOM afterwards
  * or the visible list goes stale.
@@ -365,6 +453,12 @@ function syncSelect(id) {
   const ts = selects[id];
   if (!ts) return;
   const el = document.getElementById(id);
+
+  // Captured before clearOptions/clear, both of which blank the underlying
+  // <select>. Reading it afterwards yields "" and loses the caller's pick.
+  const wanted = el.value;
+  const first = [...el.querySelectorAll("option")].find((o) => o.value)?.value ?? "";
+
   ts.clearOptions();
   ts.clear(true);
   for (const opt of el.querySelectorAll("option")) {
@@ -372,7 +466,16 @@ function syncSelect(id) {
     ts.addOption({ value: opt.value, text: opt.textContent });
   }
   ts.refreshOptions(false);
-  if (el.value) ts.setValue(el.value, true);
+
+  // Re-assert the selection the populate* function just made — either the
+  // operator's retained choice or the auto-picked first entry, so the form is
+  // runnable on a fresh load instead of showing an empty control.
+  const want = wanted || first;
+  if (want) {
+    ts.setValue(want, true);
+    el.value = want;
+  }
+
   if (el.disabled) ts.disable();
   else ts.enable();
 }
@@ -382,30 +485,34 @@ function syncSelect(id) {
 function renderPlayground() {
   const live = lastData.clients?.live || [];
   const clientSel = document.getElementById("pg-client");
-  const prevClient = clientSel.value;
+  const prevClient = selectValue("pg-client");
   clientSel.innerHTML = live.length
     ? live.map((c) => `<option value="${esc(c.clientId)}">${esc(c.name)} — ${esc(c.clientId)}</option>`).join("")
     : `<option value="">Không có client online</option>`;
   clientSel.disabled = live.length === 0;
-  if (live.some((c) => c.clientId === prevClient)) clientSel.value = prevClient;
+  // Keep the operator's pick across the 5s refresh; otherwise fall back to the
+  // first entry so the form is runnable without three manual selections.
+  clientSel.value = live.some((c) => c.clientId === prevClient)
+    ? prevClient
+    : (live[0]?.clientId ?? "");
   syncSelect("pg-client");
   populatePlaygroundCapabilities();
 }
 
 function playgroundClient() {
   const live = lastData.clients?.live || [];
-  return live.find((c) => c.clientId === document.getElementById("pg-client").value);
+  return live.find((c) => c.clientId === selectValue("pg-client"));
 }
 
 function populatePlaygroundCapabilities() {
   const capSel = document.getElementById("pg-capability");
-  const prevCap = capSel.value;
+  const prevCap = selectValue("pg-capability");
   const caps = (playgroundClient()?.capabilities || []).filter((c) => c.available);
   capSel.innerHTML = caps.length
     ? caps.map((c) => `<option value="${esc(c.id)}">${c.kind === "browser" ? "Web" : "CLI"} · ${esc(c.displayName)}</option>`).join("")
     : `<option value="">Client chưa có capability khả dụng</option>`;
   capSel.disabled = caps.length === 0;
-  if (caps.some((c) => c.id === prevCap)) capSel.value = prevCap;
+  capSel.value = caps.some((c) => c.id === prevCap) ? prevCap : (caps[0]?.id ?? "");
   syncSelect("pg-capability");
   populatePlaygroundSubmodels();
 }
@@ -414,7 +521,7 @@ function populatePlaygroundSubmodels() {
   const capSel = document.getElementById("pg-capability");
   const subField = document.getElementById("pg-submodel-field");
   const subSel = document.getElementById("pg-submodel");
-  const cap = (playgroundClient()?.capabilities || []).find((c) => c.id === capSel.value);
+  const cap = (playgroundClient()?.capabilities || []).find((c) => c.id === selectValue("pg-capability"));
   const models = cap?.models || [];
   if (!models.length) {
     subField.style.display = "none";
@@ -422,9 +529,9 @@ function populatePlaygroundSubmodels() {
     syncSelect("pg-submodel");
     return;
   }
-  const prev = subSel.value;
+  const prev = selectValue("pg-submodel");
   subSel.innerHTML = models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
-  if (models.includes(prev)) subSel.value = prev;
+  subSel.value = models.includes(prev) ? prev : models[0];
   syncSelect("pg-submodel");
   subField.style.display = "";
 }
@@ -440,8 +547,8 @@ function pgAppend(text) {
 }
 
 async function runPlayground() {
-  const clientId = document.getElementById("pg-client").value;
-  const capabilityId = document.getElementById("pg-capability").value;
+  const clientId = selectValue("pg-client");
+  const capabilityId = selectValue("pg-capability");
   const subField = document.getElementById("pg-submodel-field");
   const subModel = subField.style.display !== "none" ? document.getElementById("pg-submodel").value : undefined;
   const prompt = document.getElementById("pg-prompt").value.trim();

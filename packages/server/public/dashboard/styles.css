@@ -192,6 +192,8 @@ body {
   padding-inline: 4px;
 }
 
+/* an <a href="#/view"> so each page is linkable; the anchor defaults
+   (underline, visited colour) are reset back to the tokens */
 .nav-item {
   position: relative;
   display: flex;
@@ -200,12 +202,16 @@ body {
   padding: 9px 11px;
   border-radius: var(--radius-sm);
   color: var(--text-dim);
+  text-decoration: none;
   font-size: 13.5px;
   font-weight: 500;
   cursor: pointer;
   user-select: none;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
+
+.nav-item:visited { color: var(--text-dim); }
+.nav-item.active:visited { color: var(--accent); }
 
 .nav-item svg {
   width: 17px;

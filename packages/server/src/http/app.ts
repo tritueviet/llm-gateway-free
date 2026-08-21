@@ -14,6 +14,23 @@ import { logger } from "../log.ts";
 
 const dashboardDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "public", "dashboard");
 
+/**
+ * Sidebar pages that the dashboard renders client-side. Each one is a real URL
+ * (`/dashboard/clients`), so a hard reload or a pasted link has to serve
+ * index.html and let app.js pick the view from the path. Keep this in sync with
+ * PAGE_META in public/dashboard/app.js — an entry missing here 404s on reload.
+ */
+const DASHBOARD_PAGES = [
+  "overview",
+  "playground",
+  "clients",
+  "capabilities",
+  "usage",
+  "requests",
+  "routing",
+  "cache",
+] as const;
+
 const log = logger("http");
 
 export type AppDeps = { db: Db; hub: AgentHub; cfg: ServerConfig; cache: ResponseCache };
@@ -176,6 +193,15 @@ export function createApp(deps: AppDeps): Express {
   /* --------------------------------------------------------- dashboard UI */
 
   app.use("/dashboard", express.static(dashboardDir));
+
+  // SPA fallback: every sidebar page is its own URL, but only index.html exists
+  // on disk. Explicitly enumerated rather than a catch-all so a typo'd asset
+  // path still 404s instead of silently returning HTML.
+  app.get(
+    DASHBOARD_PAGES.map((p) => `/dashboard/${p}`),
+    (_req, res) => res.sendFile(path.join(dashboardDir, "index.html")),
+  );
+
   app.get("/", (_req, res) => res.redirect("/dashboard"));
 
   app.use((req, res) => {
